@@ -4,6 +4,8 @@ import logging
 import calendar
 import threading
 from datetime import datetime, timedelta, date, time as dtime
+from zoneinfo import ZoneInfo
+
 
 from flask import Flask
 
@@ -253,7 +255,9 @@ def parse_task_datetime(task: dict):
     if not task.get("date") or not task.get("time"):
         return None
     try:
-        return datetime.strptime(task["date"] + " " + task["time"], "%Y-%m-%d %H:%M")
+       dt = datetime.strptime(task["date"] + " " + task["time"], "%Y-%m-%d %H:%M")
+# вважаємо, що це час Києва
+return dt
     except Exception:
         return None
 
@@ -291,7 +295,7 @@ def schedule_reminder(app: Application, chat_id: int, task: dict, remind_before_
         return
 
     remind_at = dt - timedelta(minutes=remind_before_min)
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Europe/Kyiv")).replace(tzinfo=None)
     delay = (remind_at - now).total_seconds()
 
     if delay <= 0:
