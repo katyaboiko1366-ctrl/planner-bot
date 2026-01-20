@@ -19,7 +19,11 @@ from telegram.ext import (
     filters,
 )
 
-TOKEN = "8244657716:AAG0bk2iV1jDODvbkbjyPa5HieznHgwbnPY"
+# ✅ ТОКЕН БЕРЕТЬСЯ З RENDER ENV: BOT_TOKEN
+TOKEN = os.getenv("BOT_TOKEN", "")
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set (add it in Render Environment Variables)")
+
 DATA_FILE = "users.json"
 TIMEZONE_NAME = "Europe/Kyiv"
 
@@ -62,11 +66,11 @@ def ensure_user(users: dict, chat_id: str):
     if "soft_check_hour" not in u["settings"]:
         u["settings"]["soft_check_hour"] = 10
 
-    # Нагадування
+    # reminders
     if "reminders_enabled" not in u["settings"]:
         u["settings"]["reminders_enabled"] = True
     if "remind_before_min" not in u["settings"]:
-        u["settings"]["remind_before_min"] = 10  # default
+        u["settings"]["remind_before_min"] = 10
 
     if "stats" not in u or not isinstance(u["stats"], dict):
         u["stats"] = {}
@@ -163,7 +167,12 @@ def calendar_kb(year: int, month: int):
             if day == 0:
                 row.append(InlineKeyboardButton(" ", callback_data="cal:ignore"))
             else:
-                row.append(InlineKeyboardButton(str(day), callback_data=f"cal:pick:{year}-{month:02d}-{day:02d}"))
+                row.append(
+                    InlineKeyboardButton(
+                        str(day),
+                        callback_data=f"cal:pick:{year}-{month:02d}-{day:02d}"
+                    )
+                )
         rows.append(row)
 
     rows.append([
@@ -209,8 +218,7 @@ def parse_task_datetime(task: dict):
     if not task.get("date") or not task.get("time"):
         return None
     try:
-        dt = datetime.strptime(task["date"] + " " + task["time"], "%Y-%m-%d %H:%M")
-        return dt
+        return datetime.strptime(task["date"] + " " + task["time"], "%Y-%m-%d %H:%M")
     except Exception:
         return None
 
@@ -220,7 +228,6 @@ async def reminder_send(context: ContextTypes.DEFAULT_TYPE):
     chat_id = int(job.data["chat_id"])
     task = job.data["task"]
 
-    # якщо задача вже виконана — не шлемо
     users = load_users()
     users = ensure_user(users, str(chat_id))
     tasks = users[str(chat_id)]["tasks"]
@@ -241,33 +248,28 @@ async def reminder_send(context: ContextTypes.DEFAULT_TYPE):
 
 
 def schedule_reminder(app: Application, chat_id: int, task: dict, remind_before_min: int):
-    """
-    Надійний варіант: плануємо "через N секунд", а не на конкретний datetime.
-    """
     dt = parse_task_datetime(task)
     if not dt:
         return
 
     remind_at = dt - timedelta(minutes=remind_before_min)
     now = datetime.now()
-
     delay = (remind_at - now).total_seconds()
+
     if delay <= 0:
         return
 
     job_name = f"rem:{chat_id}:{task['id']}"
 
-    # прибираємо старе, якщо було
     for j in app.job_queue.get_jobs_by_name(job_name):
         j.schedule_removal()
 
     app.job_queue.run_once(
         reminder_send,
-        when=delay,  # <-- головна зміна: seconds
+        when=delay,  # seconds
         name=job_name,
         data={"chat_id": chat_id, "task": task}
     )
-
 
 
 # --- Menu router ---
@@ -331,7 +333,6 @@ async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     y = date.today().year
     m = date.today().month
-
     await update.message.reply_text("Обери дату виконання 📅", reply_markup=calendar_kb(y, m))
     return ADD_DATE_PICK
 
@@ -397,7 +398,6 @@ async def add_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     tasks.append(task)
 
-    # плануємо нагадування, якщо є час і нагадування увімкнені
     settings = users[chat_id]["settings"]
     if settings.get("reminders_enabled", True) and task.get("time"):
         remind_before = int(settings.get("remind_before_min", 10))
@@ -602,7 +602,7 @@ async def show_reminders_info(query, user_data):
         "🔔 Нагадування\n\n"
         f"Стан: {'увімкнено ✅' if enabled else 'вимкнено 🛑'}\n"
         f"За скільки хвилин: {mins}\n\n"
-        "Нагадування спрацьовують для задач, де ти вказуєш час."
+        "Нагадування працюють для задач, де ти вказуєш час."
     )
     await query.edit_message_text(text, reply_markup=back_kb())
 
@@ -706,11 +706,8 @@ def main():
     app.add_handler(CallbackQueryHandler(settings_click, pattern=r"^set:"))
     app.add_handler(CallbackQueryHandler(minutes_pick, pattern=r"^mins:"))
 
-    # Soft check: кожного дня о 10:00
-    app.job_queue.run_daily(
-        soft_check_job,
-        time=dtime(hour=10, minute=0)
-    )
+    # М’який контроль щодня о 10:00
+    app.job_queue.run_daily(soft_check_job, time=dtime(hour=10, minute=0))
 
     app.run_polling()
 
