@@ -2,7 +2,10 @@ import json
 import os
 import logging
 import calendar
+import threading
 from datetime import datetime, timedelta, date, time as dtime
+
+from flask import Flask
 
 from telegram import (
     Update,
@@ -32,7 +35,28 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# --- Storage ---
+# -------------------------
+# Render health server (PORT)
+# -------------------------
+
+def run_health_server():
+    """
+    Render Web Service очікує відкритий порт.
+    Цей міні-сервер просто відповідає OK.
+    """
+    app = Flask(__name__)
+
+    @app.get("/")
+    def home():
+        return "OK", 200
+
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
+
+
+# -------------------------
+# Storage
+# -------------------------
 
 def load_users():
     if not os.path.exists(DATA_FILE):
@@ -61,6 +85,7 @@ def ensure_user(users: dict, chat_id: str):
     if "settings" not in u or not isinstance(u["settings"], dict):
         u["settings"] = {}
 
+    # soft check
     if "soft_check_enabled" not in u["settings"]:
         u["settings"]["soft_check_enabled"] = True
     if "soft_check_hour" not in u["settings"]:
@@ -72,6 +97,7 @@ def ensure_user(users: dict, chat_id: str):
     if "remind_before_min" not in u["settings"]:
         u["settings"]["remind_before_min"] = 10
 
+    # stats
     if "stats" not in u or not isinstance(u["stats"], dict):
         u["stats"] = {}
     if "current_streak" not in u["stats"]:
@@ -94,7 +120,9 @@ def next_task_id(tasks: list) -> int:
     return mx + 1
 
 
-# --- UI ---
+# -------------------------
+# UI
+# -------------------------
 
 def main_menu_kb():
     return InlineKeyboardMarkup([
@@ -142,7 +170,9 @@ def filter_tasks_by_range(tasks: list, start: date, end: date):
     return out
 
 
-# --- Calendar keyboard ---
+# -------------------------
+# Calendar keyboard
+# -------------------------
 
 def calendar_kb(year: int, month: int):
     cal = calendar.monthcalendar(year, month)
@@ -197,7 +227,10 @@ def add_month(year: int, month: int, delta: int):
     return y, m
 
 
-# --- Add flow states ---
+# -------------------------
+# Add task flow states
+# -------------------------
+
 ADD_TITLE, ADD_DATE_PICK, ADD_TIME = range(3)
 
 
@@ -212,7 +245,9 @@ async def show_menu(query):
     await query.edit_message_text("🏠 Головне меню:", reply_markup=main_menu_kb())
 
 
-# --- Reminder scheduling ---
+# -------------------------
+# Reminder scheduling
+# -------------------------
 
 def parse_task_datetime(task: dict):
     if not task.get("date") or not task.get("time"):
@@ -248,6 +283,9 @@ async def reminder_send(context: ContextTypes.DEFAULT_TYPE):
 
 
 def schedule_reminder(app: Application, chat_id: int, task: dict, remind_before_min: int):
+    """
+    Надійний варіант: плануємо через delay (секунди).
+    """
     dt = parse_task_datetime(task)
     if not dt:
         return
@@ -266,13 +304,15 @@ def schedule_reminder(app: Application, chat_id: int, task: dict, remind_before_
 
     app.job_queue.run_once(
         reminder_send,
-        when=delay,  # seconds
+        when=delay,
         name=job_name,
         data={"chat_id": chat_id, "task": task}
     )
 
 
-# --- Menu router ---
+# -------------------------
+# Menu router
+# -------------------------
 
 async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -321,7 +361,9 @@ async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# --- Add task flow ---
+# -------------------------
+# Add task flow
+# -------------------------
 
 async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -415,7 +457,9 @@ async def add_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# --- Plans ---
+# -------------------------
+# Plans
+# -------------------------
 
 async def show_plan_day(query, tasks):
     today = date.today()
@@ -440,7 +484,9 @@ async def show_plan_month(query, tasks):
     await query.edit_message_text(text, reply_markup=back_kb())
 
 
-# --- Do list + streak ---
+# -------------------------
+# Do list + streak
+# -------------------------
 
 def update_streak(stats: dict):
     today = date.today().isoformat()
@@ -542,7 +588,9 @@ async def done_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# --- Stats + Settings + Reminders UI ---
+# -------------------------
+# Stats + Settings + Reminders UI
+# -------------------------
 
 async def show_stats(query, user_data):
     st = user_data["stats"]
@@ -658,7 +706,9 @@ async def minutes_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# --- Soft control job ---
+# -------------------------
+# Soft control job
+# -------------------------
 
 async def soft_check_job(context: ContextTypes.DEFAULT_TYPE):
     users = load_users()
@@ -685,7 +735,14 @@ async def soft_check_job(context: ContextTypes.DEFAULT_TYPE):
                 pass
 
 
+# -------------------------
+# Main
+# -------------------------
+
 def main():
+    # ✅ запуск "порту" для Render
+    threading.Thread(target=run_health_server, daemon=True).start()
+
     app = Application.builder().token(TOKEN).build()
 
     add_flow = ConversationHandler(
