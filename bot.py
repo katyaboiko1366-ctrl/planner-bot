@@ -4,9 +4,8 @@ import logging
 import calendar
 import threading
 from datetime import datetime, timedelta, date, time as dtime
+
 from zoneinfo import ZoneInfo
-
-
 from flask import Flask
 
 from telegram import (
@@ -30,7 +29,7 @@ if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set (add it in Render Environment Variables)")
 
 DATA_FILE = "users.json"
-TIMEZONE_NAME = "Europe/Kyiv"
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -78,9 +77,6 @@ def ensure_user(users: dict, chat_id: str):
 
     u = users[chat_id]
 
-    if "timezone" not in u:
-        u["timezone"] = TIMEZONE_NAME
-
     if "tasks" not in u or not isinstance(u["tasks"], list):
         u["tasks"] = []
 
@@ -90,8 +86,6 @@ def ensure_user(users: dict, chat_id: str):
     # soft check
     if "soft_check_enabled" not in u["settings"]:
         u["settings"]["soft_check_enabled"] = True
-    if "soft_check_hour" not in u["settings"]:
-        u["settings"]["soft_check_hour"] = 10
 
     # reminders
     if "reminders_enabled" not in u["settings"]:
@@ -248,16 +242,18 @@ async def show_menu(query):
 
 
 # -------------------------
-# Reminder scheduling
+# Reminder scheduling (Kyiv TZ)
 # -------------------------
 
-def parse_task_datetime(task: dict):
+def parse_task_datetime_kyiv(task: dict):
+    """
+    Повертає datetime у часовій зоні Києва (aware).
+    """
     if not task.get("date") or not task.get("time"):
         return None
     try:
-       dt = datetime.strptime(task["date"] + " " + task["time"], "%Y-%m-%d %H:%M")
-# вважаємо, що це час Києва
-return dt
+        naive = datetime.strptime(task["date"] + " " + task["time"], "%Y-%m-%d %H:%M")
+        return naive.replace(tzinfo=KYIV_TZ)
     except Exception:
         return None
 
@@ -288,15 +284,16 @@ async def reminder_send(context: ContextTypes.DEFAULT_TYPE):
 
 def schedule_reminder(app: Application, chat_id: int, task: dict, remind_before_min: int):
     """
-    Надійний варіант: плануємо через delay (секунди).
+    Плануємо нагадування через delay (секунди), але правильно рахуємо час по Києву.
     """
-    dt = parse_task_datetime(task)
-    if not dt:
+    dt_kyiv = parse_task_datetime_kyiv(task)
+    if not dt_kyiv:
         return
 
-    remind_at = dt - timedelta(minutes=remind_before_min)
-    now = datetime.now(ZoneInfo("Europe/Kyiv")).replace(tzinfo=None)
-    delay = (remind_at - now).total_seconds()
+    remind_at = dt_kyiv - timedelta(minutes=remind_before_min)
+
+    now_kyiv = datetime.now(KYIV_TZ)
+    delay = (remind_at - now_kyiv).total_seconds()
 
     if delay <= 0:
         return
@@ -440,7 +437,7 @@ async def add_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "date": context.user_data["new_task_date"],
         "time": tm,
         "done": False,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": datetime.now(KYIV_TZ).isoformat(timespec="seconds"),
     }
     tasks.append(task)
 
@@ -578,7 +575,7 @@ async def done_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     found["done"] = True
-    found["done_at"] = datetime.now().isoformat(timespec="seconds")
+    found["done_at"] = datetime.now(KYIV_TZ).isoformat(timespec="seconds")
 
     users[chat_id]["stats"]["done_total"] = users[chat_id]["stats"].get("done_total", 0) + 1
     update_streak(users[chat_id]["stats"])
@@ -767,8 +764,11 @@ def main():
     app.add_handler(CallbackQueryHandler(settings_click, pattern=r"^set:"))
     app.add_handler(CallbackQueryHandler(minutes_pick, pattern=r"^mins:"))
 
-    # М’який контроль щодня о 10:00
-    app.job_queue.run_daily(soft_check_job, time=dtime(hour=10, minute=0))
+    # М’який контроль щодня о 10:00 за Києвом
+    app.job_queue.run_daily(
+        soft_check_job,
+        time=dtime(hour=10, minute=0, tzinfo=KYIV_TZ)
+    )
 
     app.run_polling()
 
